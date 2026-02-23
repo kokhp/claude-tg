@@ -938,6 +938,20 @@ function startBot() {
         }
         targetSessionId = mapping.sessionId;
       }
+
+      // Fallback: parse session number from the replied-to message text (survives daemon restarts)
+      if (!targetSessionId && ctx.message.reply_to_message?.text) {
+        const match = ctx.message.reply_to_message.text.match(/#(\d+)\s/);
+        if (match) {
+          const num = parseInt(match[1]);
+          for (const [sid] of sessions) {
+            if (getSessionLabel(sid) === num) {
+              targetSessionId = sid;
+              break;
+            }
+          }
+        }
+      }
     }
 
     // If no reply-to, try auto-routing
