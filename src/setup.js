@@ -73,7 +73,9 @@ function installHooks(port) {
     // Remove any previous telegram-bridge hooks
     const filtered = existing.filter((entry) => {
       const hooks = entry.hooks || [];
-      return !hooks.some((h) => h.command && h.command.includes('claude-telegram-bridge'));
+      return !hooks.some((h) => h.command && (
+        h.command.includes('claude-telegram-bridge') || h.command.includes('claude-tg')
+      ));
     });
     settings.hooks[event] = [...filtered, ...hookConfigs];
   }
@@ -100,7 +102,9 @@ function uninstallHooks() {
   for (const event of Object.keys(settings.hooks)) {
     settings.hooks[event] = (settings.hooks[event] || []).filter((entry) => {
       const hooks = entry.hooks || [];
-      return !hooks.some((h) => h.command && h.command.includes('claude-telegram-bridge'));
+      return !hooks.some((h) => h.command && (
+        h.command.includes('claude-telegram-bridge') || h.command.includes('claude-tg')
+      ));
     });
     if (settings.hooks[event].length === 0) {
       delete settings.hooks[event];
