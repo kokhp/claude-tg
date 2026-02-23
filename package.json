@@ -1,0 +1,41 @@
+{
+  "name": "claude-tg",
+  "version": "1.0.0",
+  "description": "Control Claude Code from Telegram — approve permissions, answer questions, reply to idle sessions, send files, all from your phone",
+  "bin": {
+    "claude-tg": "./bin/claude-tg"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "telegram",
+    "telegram-bot",
+    "cli",
+    "hooks",
+    "remote",
+    "approval",
+    "permission",
+    "notification",
+    "multi-session"
+  ],
+  "author": "Himanshu",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kokhp/claude-tg.git"
+  },
+  "homepage": "https://github.com/kokhp/claude-tg#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "telegraf": "^4.16.3",
+    "commander": "^12.0.0"
+  }
+}
