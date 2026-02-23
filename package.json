@@ -1,6 +1,6 @@
 {
   "name": "claude-tg",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Control Claude Code from Telegram — approve permissions, answer questions, reply to idle sessions, send files, all from your phone",
   "bin": {
     "claude-tg": "./bin/claude-tg.js"

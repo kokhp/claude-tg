@@ -250,6 +250,140 @@ program
   });
 
 program
+  .command('test')
+  .description('Test the full chain: config, daemon, hooks, Telegram')
+  .action(async () => {
+    const http = require('http');
+    let ok = true;
+
+    // 1. Config
+    console.log('\n--- Config ---');
+    const config = loadConfig();
+    if (config.botToken && config.chatId) {
+      console.log(`  Bot token: ${config.botToken.slice(0, 8)}...`);
+      console.log(`  Chat ID: ${config.chatId}`);
+      console.log(`  Port: ${config.port}`);
+    } else {
+      console.log('  NOT CONFIGURED. Run: claude-tg setup');
+      ok = false;
+    }
+
+    // 2. Hooks
+    console.log('\n--- Hooks ---');
+    const settingsPath = path.join(process.env.HOME, '.claude', 'settings.json');
+    if (fs.existsSync(settingsPath)) {
+      try {
+        const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+        const hooks = settings.hooks || {};
+
+        const permHooks = hooks.PermissionRequest || [];
+        const permCmd = permHooks[0]?.hooks?.[0]?.command || 'NOT FOUND';
+        console.log(`  PermissionRequest: ${permCmd}`);
+        if (permCmd !== 'NOT FOUND') {
+          const scriptPath = permCmd.replace(/^node\s+/, '');
+          if (fs.existsSync(scriptPath)) {
+            console.log('    File exists: YES');
+          } else {
+            console.log(`    File exists: NO — ${scriptPath}`);
+            ok = false;
+          }
+        }
+
+        const notifHooks = hooks.Notification || [];
+        const notifCmd = notifHooks[0]?.hooks?.[0]?.command || 'NOT FOUND';
+        console.log(`  Notification: ${notifCmd}`);
+        if (notifCmd !== 'NOT FOUND') {
+          const scriptPath = notifCmd.replace(/^node\s+/, '');
+          if (fs.existsSync(scriptPath)) {
+            console.log('    File exists: YES');
+          } else {
+            console.log(`    File exists: NO — ${scriptPath}`);
+            ok = false;
+          }
+        }
+      } catch (e) {
+        console.log(`  Error reading settings: ${e.message}`);
+        ok = false;
+      }
+    } else {
+      console.log('  ~/.claude/settings.json not found. Run: claude-tg setup');
+      ok = false;
+    }
+
+    // 3. Daemon
+    console.log('\n--- Daemon ---');
+    try {
+      const health = await new Promise((resolve, reject) => {
+        const req = http.get(`http://127.0.0.1:${config.port}/api/health`, (res) => {
+          let data = '';
+          res.on('data', (chunk) => { data += chunk; });
+          res.on('end', () => {
+            try { resolve(JSON.parse(data)); } catch { reject(new Error('bad response')); }
+          });
+        });
+        req.on('error', reject);
+        req.setTimeout(3000, () => { req.destroy(); reject(new Error('timeout')); });
+      });
+      console.log(`  Running: YES (${health.sessions} sessions, ${health.pending} pending)`);
+    } catch {
+      console.log('  Running: NO — start with: claude-tg daemon start');
+      ok = false;
+    }
+
+    // 4. Telegram
+    console.log('\n--- Telegram ---');
+    if (config.botToken && config.chatId) {
+      try {
+        const { Telegram } = require('telegraf');
+        const tg = new Telegram(config.botToken);
+        await tg.sendMessage(config.chatId, '🧪 claude-tg test — everything is working!');
+        console.log('  Test message sent: YES');
+      } catch (err) {
+        console.log(`  Test message FAILED: ${err.message}`);
+        ok = false;
+      }
+    } else {
+      console.log('  Skipped (no config)');
+    }
+
+    // 5. Send test notification to daemon
+    if (ok) {
+      console.log('\n--- Hook simulation ---');
+      try {
+        const result = await new Promise((resolve, reject) => {
+          const payload = JSON.stringify({
+            session_id: 'test-' + Date.now(),
+            cwd: process.cwd(),
+            notification_type: 'idle_prompt',
+            message: 'Test notification from claude-tg test',
+            transcript_path: null,
+            tty_path: null,
+          });
+          const req = http.request({
+            hostname: '127.0.0.1', port: config.port,
+            path: '/api/notify', method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+            timeout: 5000,
+          }, (res) => {
+            let data = '';
+            res.on('data', (c) => { data += c; });
+            res.on('end', () => resolve(data));
+          });
+          req.on('error', reject);
+          req.write(payload);
+          req.end();
+        });
+        console.log('  Notification sent to daemon: YES');
+        console.log('  Check Telegram — you should see a test idle notification');
+      } catch (err) {
+        console.log(`  Notification FAILED: ${err.message}`);
+      }
+    }
+
+    console.log(`\n${ok ? 'All checks passed.' : 'Some checks FAILED — fix the issues above.'}\n`);
+  });
+
+program
   .command('uninstall')
   .description('Remove hooks from ~/.claude/settings.json')
   .action(() => {
