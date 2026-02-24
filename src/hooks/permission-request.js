@@ -5,10 +5,21 @@
 // On error/timeout: exits 0 with no output → falls back to local dialog.
 
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const { execSync } = require('child_process');
 
-const DAEMON_PORT = 7483;
+const DAEMON_PORT = parseInt(process.env.CLAUDE_TG_PORT || '7483', 10);
 const DAEMON_HOST = '127.0.0.1';
+const HOOK_LOG = path.join(process.env.HOME, '.claude-telegram-bridge', 'hooks.log');
+
+function hookLog(msg) {
+  try {
+    const dir = path.dirname(HOOK_LOG);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(HOOK_LOG, `[${new Date().toISOString()}] [perm] ${msg}\n`);
+  } catch {}
+}
 
 function findTty() {
   try {
@@ -71,11 +82,14 @@ function postToDaemon(path, body) {
 }
 
 async function main() {
+  hookLog('Hook called');
   try {
     const input = await readStdin();
-
     const hookInput = input.hookInput || input;
     const ttyPath = findTty();
+
+    hookLog(`tool=${hookInput.tool_name} session=${hookInput.session_id} tty=${ttyPath} port=${DAEMON_PORT}`);
+
     const result = await postToDaemon('/api/permission', {
       session_id: hookInput.session_id,
       cwd: hookInput.cwd,
@@ -87,9 +101,11 @@ async function main() {
     });
 
     if (!result || !result.decision) {
-      // No decision — fall back to local dialog
+      hookLog('No decision from daemon — falling back to local dialog');
       process.exit(0);
     }
+
+    hookLog(`Decision: ${JSON.stringify(result.decision)}`);
 
     const output = {
       hookSpecificOutput: {
@@ -100,8 +116,8 @@ async function main() {
     };
 
     process.stdout.write(JSON.stringify(output));
-  } catch {
-    // Daemon unreachable or error — fall back to local dialog
+  } catch (err) {
+    hookLog(`ERROR: ${err.message || err}`);
     process.exit(0);
   }
 }

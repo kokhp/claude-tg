@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
-// Notification hook for Claude Code.
-// Detects parent TTY, reads hook input from stdin, fires POST to daemon, exits.
+// PostToolUse hook for Claude Code.
+// Fires after each tool use. Sends tool status to daemon for live progress updates.
+// Async fire-and-forget — does not block Claude.
 
 const http = require('http');
 const fs = require('fs');
@@ -16,7 +17,7 @@ function hookLog(msg) {
   try {
     const dir = path.dirname(HOOK_LOG);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.appendFileSync(HOOK_LOG, `[${new Date().toISOString()}] [notify] ${msg}\n`);
+    fs.appendFileSync(HOOK_LOG, `[${new Date().toISOString()}] [post-tool] ${msg}\n`);
   } catch {}
 }
 
@@ -33,10 +34,6 @@ function readStdin() {
   });
 }
 
-/**
- * Walk up the process tree to find the TTY of the Claude process.
- * Hook process itself has tty=??, but the Claude parent has a real TTY.
- */
 function findTty() {
   try {
     let pid = process.ppid;
@@ -81,25 +78,23 @@ function postToDaemon(body) {
 }
 
 async function main() {
-  hookLog('Hook called');
   try {
     const input = await readStdin();
     const hookInput = input.hookInput || input;
     const ttyPath = findTty();
-    const notifType = hookInput.notification_type || hookInput.type || 'unknown';
 
-    hookLog(`type=${notifType} session=${hookInput.session_id} tty=${ttyPath} port=${DAEMON_PORT}`);
+    const toolName = hookInput.tool_name || 'Unknown';
+    hookLog(`tool=${toolName} session=${hookInput.session_id}`);
 
     await postToDaemon({
       session_id: hookInput.session_id,
       cwd: hookInput.cwd,
-      notification_type: notifType,
-      message: hookInput.message,
+      notification_type: 'tool_status',
+      tool_name: toolName,
+      tool_input: hookInput.tool_input,
       transcript_path: hookInput.transcript_path,
       tty_path: ttyPath,
     });
-
-    hookLog(`Sent to daemon OK`);
   } catch (err) {
     hookLog(`ERROR: ${err.message || err}`);
   }

@@ -25,27 +25,29 @@ function telegramApiCall(token, method) {
 }
 
 function getHooksConfig(port) {
+  const envPrefix = port !== 7483 ? `CLAUDE_TG_PORT=${port} ` : '';
+  // Use absolute path to the node binary that ran setup — ensures hooks work
+  // even if node isn't in PATH for non-interactive shells (nvm, fnm, etc.)
+  const nodeBin = process.execPath;
   return {
     PermissionRequest: [
       {
         hooks: [
           {
             type: 'command',
-            command: `node ${path.join(HOOKS_DIR, 'permission-request.js')}`,
+            command: `${envPrefix}${nodeBin} ${path.join(HOOKS_DIR, 'permission-request.js')}`,
             timeout: 1800,
             statusMessage: 'Waiting for Telegram approval...',
           },
         ],
       },
     ],
-    Notification: [
+    Stop: [
       {
-        matcher: 'idle_prompt|elicitation_dialog',
         hooks: [
           {
             type: 'command',
-            command: `node ${path.join(HOOKS_DIR, 'notification.js')}`,
-            async: true,
+            command: `${envPrefix}${nodeBin} ${path.join(HOOKS_DIR, 'stop.js')}`,
           },
         ],
       },
@@ -67,17 +69,23 @@ function installHooks(port) {
 
   const newHooks = getHooksConfig(port);
 
-  // Replace our hooks (identified by our hook command paths), preserve others
-  for (const [event, hookConfigs] of Object.entries(newHooks)) {
-    const existing = settings.hooks[event] || [];
-    // Remove any previous telegram-bridge hooks
-    const filtered = existing.filter((entry) => {
+  // First: remove ALL our hooks from ALL events (clean slate)
+  for (const event of Object.keys(settings.hooks)) {
+    settings.hooks[event] = (settings.hooks[event] || []).filter((entry) => {
       const hooks = entry.hooks || [];
       return !hooks.some((h) => h.command && (
         h.command.includes('claude-telegram-bridge') || h.command.includes('claude-tg')
       ));
     });
-    settings.hooks[event] = [...filtered, ...hookConfigs];
+    if (settings.hooks[event].length === 0) {
+      delete settings.hooks[event];
+    }
+  }
+
+  // Then: add our new hooks
+  for (const [event, hookConfigs] of Object.entries(newHooks)) {
+    const existing = settings.hooks[event] || [];
+    settings.hooks[event] = [...existing, ...hookConfigs];
   }
 
   // Ensure directory exists

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
-// Notification hook for Claude Code.
-// Detects parent TTY, reads hook input from stdin, fires POST to daemon, exits.
+// Stop hook for Claude Code.
+// Fires every time Claude finishes a response turn.
+// Sends a notification to the daemon so Telegram gets notified immediately.
 
 const http = require('http');
 const fs = require('fs');
@@ -16,7 +17,7 @@ function hookLog(msg) {
   try {
     const dir = path.dirname(HOOK_LOG);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.appendFileSync(HOOK_LOG, `[${new Date().toISOString()}] [notify] ${msg}\n`);
+    fs.appendFileSync(HOOK_LOG, `[${new Date().toISOString()}] [stop] ${msg}\n`);
   } catch {}
 }
 
@@ -33,10 +34,6 @@ function readStdin() {
   });
 }
 
-/**
- * Walk up the process tree to find the TTY of the Claude process.
- * Hook process itself has tty=??, but the Claude parent has a real TTY.
- */
 function findTty() {
   try {
     let pid = process.ppid;
@@ -86,20 +83,19 @@ async function main() {
     const input = await readStdin();
     const hookInput = input.hookInput || input;
     const ttyPath = findTty();
-    const notifType = hookInput.notification_type || hookInput.type || 'unknown';
 
-    hookLog(`type=${notifType} session=${hookInput.session_id} tty=${ttyPath} port=${DAEMON_PORT}`);
+    hookLog(`session=${hookInput.session_id} tty=${ttyPath}`);
 
     await postToDaemon({
       session_id: hookInput.session_id,
       cwd: hookInput.cwd,
-      notification_type: notifType,
-      message: hookInput.message,
+      notification_type: 'stop',
+      message: hookInput.last_assistant_message || '',
       transcript_path: hookInput.transcript_path,
       tty_path: ttyPath,
     });
 
-    hookLog(`Sent to daemon OK`);
+    hookLog('Sent to daemon OK');
   } catch (err) {
     hookLog(`ERROR: ${err.message || err}`);
   }

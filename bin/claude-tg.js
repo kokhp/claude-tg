@@ -140,6 +140,25 @@ daemon
     }
   });
 
+const HOOKS_LOG_PATH = path.join(CONFIG_DIR, 'hooks.log');
+
+program
+  .command('hooks-log')
+  .description('Show hook execution log (diagnose if hooks are firing)')
+  .action(() => {
+    if (!fs.existsSync(HOOKS_LOG_PATH)) {
+      console.log('No hooks log found. Hooks have not been called yet.');
+      console.log('Make sure Claude Code is running and try using a tool.');
+      return;
+    }
+    const content = fs.readFileSync(HOOKS_LOG_PATH, 'utf8');
+    const lines = content.trim().split('\n');
+    const last = lines.slice(-30);
+    console.log(`--- Last ${last.length} hook log entries ---\n`);
+    console.log(last.join('\n'));
+    console.log(`\nFull log: ${HOOKS_LOG_PATH}`);
+  });
+
 // --- Send commands (stateless, no daemon needed) ---
 
 function createTelegramClient() {
@@ -276,15 +295,30 @@ program
         const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
         const hooks = settings.hooks || {};
 
+        // Extract script path and node binary from hook command
+        function extractScriptPath(cmd) {
+          const match = cmd.match(/node\s+(.+)$/);
+          return match ? match[1].trim() : null;
+        }
+        function extractNodeBin(cmd) {
+          const match = cmd.match(/^(?:\S+=\S+\s+)?(\S*node)\s/);
+          return match ? match[1] : 'node';
+        }
+
         const permHooks = hooks.PermissionRequest || [];
         const permCmd = permHooks[0]?.hooks?.[0]?.command || 'NOT FOUND';
         console.log(`  PermissionRequest: ${permCmd}`);
         if (permCmd !== 'NOT FOUND') {
-          const scriptPath = permCmd.replace(/^node\s+/, '');
-          if (fs.existsSync(scriptPath)) {
+          const nodeBin = extractNodeBin(permCmd);
+          const scriptPath = extractScriptPath(permCmd);
+          if (nodeBin !== 'node' && !fs.existsSync(nodeBin)) {
+            console.log(`    Node binary: NO — ${nodeBin}`);
+            console.log('    Run: claude-tg setup (to fix hook paths)');
+            ok = false;
+          } else if (scriptPath && fs.existsSync(scriptPath)) {
             console.log('    File exists: YES');
           } else {
-            console.log(`    File exists: NO — ${scriptPath}`);
+            console.log(`    File exists: NO — ${scriptPath || permCmd}`);
             ok = false;
           }
         }
@@ -293,11 +327,16 @@ program
         const notifCmd = notifHooks[0]?.hooks?.[0]?.command || 'NOT FOUND';
         console.log(`  Notification: ${notifCmd}`);
         if (notifCmd !== 'NOT FOUND') {
-          const scriptPath = notifCmd.replace(/^node\s+/, '');
-          if (fs.existsSync(scriptPath)) {
+          const nodeBin = extractNodeBin(notifCmd);
+          const scriptPath = extractScriptPath(notifCmd);
+          if (nodeBin !== 'node' && !fs.existsSync(nodeBin)) {
+            console.log(`    Node binary: NO — ${nodeBin}`);
+            console.log('    Run: claude-tg setup (to fix hook paths)');
+            ok = false;
+          } else if (scriptPath && fs.existsSync(scriptPath)) {
             console.log('    File exists: YES');
           } else {
-            console.log(`    File exists: NO — ${scriptPath}`);
+            console.log(`    File exists: NO — ${scriptPath || notifCmd}`);
             ok = false;
           }
         }
