@@ -1,6 +1,6 @@
-# claude-tg
+# claude-tg — Claude Code CLI to Telegram Bridge
 
-Control Claude Code from your phone via Telegram — approve permissions, answer interactive questions, reply to idle sessions, and send files.
+Control Claude Code CLI from your phone via Telegram — approve permissions, answer interactive questions, reply to idle sessions, and send files.
 
 If you run Claude CLI and step away from your machine, it stalls whenever it needs tool permission or asks a question. This bridge sends everything to Telegram so you can keep Claude working remotely.
 
@@ -248,10 +248,11 @@ claude-tg/
 │   └── claude-tg              # CLI entry point
 ├── src/
 │   ├── config.js              # Read/write ~/.claude-telegram-bridge/config.json
-│   ├── daemon.js              # Telegram bot + HTTP server + session tracking
+│   ├── daemon.js              # Telegram bot + HTTP server + Telegraph + session tracking
 │   ├── setup.js               # Interactive setup + hook installation
 │   └── hooks/
 │       ├── permission-request.js   # Blocking PermissionRequest hook
+│       ├── stop.js                 # Stop notification hook
 │       └── notification.js         # Async Notification hook
 ├── package.json
 └── README.md

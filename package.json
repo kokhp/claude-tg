@@ -14,15 +14,20 @@
   "keywords": [
     "claude",
     "claude-code",
+    "claude-cli",
     "telegram",
     "telegram-bot",
+    "telegram-bridge",
     "cli",
     "hooks",
     "remote",
     "approval",
     "permission",
     "notification",
-    "multi-session"
+    "multi-session",
+    "anthropic",
+    "ai-agent",
+    "mobile"
   ],
   "author": "Himanshu",
   "license": "MIT",
