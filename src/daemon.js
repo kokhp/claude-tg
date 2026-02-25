@@ -1610,9 +1610,13 @@ function handleElicitationPermission(data) {
 }
 
 async function sendNotification(data) {
-  trackSession(data);
-
   const notifType = data.notification_type || data.type;
+
+  // For stop events, check if session is known BEFORE registering it.
+  // Subagent sessions have never-before-seen IDs — skip them.
+  if (notifType !== 'stop') {
+    trackSession(data);
+  }
 
   // Check if this is an elicitation
   if (notifType === 'elicitation_dialog') {
@@ -1655,21 +1659,27 @@ async function sendNotification(data) {
     return;
   }
 
-  // Stop notification — debounce per TTY to avoid subagent spam.
-  // Each subagent Task gets its own session_id and fires a stop.
-  // We wait for silence (no more stops from same TTY) before notifying.
+  // Stop notification — only notify for known sessions.
+  // Subagent Tasks each get a unique session_id that was never seen before.
+  // Main sessions are registered via permission requests or prior notifications.
   if (notifType === 'stop') {
     toolStatusMessages.delete(data.session_id);
-    const tty = data.tty_path || 'no-tty';
 
-    // Cancel any pending stop for this TTY
+    // Only notify for sessions we already know about (from permission requests etc.)
+    // Unknown session_ids are subagents — skip them silently.
+    const knownSession = sessions.has(data.session_id);
+    if (!knownSession) {
+      log(`Stop skipped (unknown session, likely subagent): ${data.session_id?.slice(0, 8)}`);
+      return;
+    }
+
+    // Debounce per TTY — if multiple stops from same TTY within window, send only the last
+    const tty = data.tty_path || 'no-tty';
     const pending = pendingStops.get(tty);
     if (pending) {
       clearTimeout(pending.timer);
-      log(`Stop debounce: replaced pending for ${tty}`);
     }
 
-    // Start a new timer — only fires if no more stops arrive
     const timer = setTimeout(() => {
       pendingStops.delete(tty);
       sendStopNotification(data).catch((e) => log(`Stop notify error: ${e.message}`));
