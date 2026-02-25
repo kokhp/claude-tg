@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 // Stop hook for Claude Code.
-// Fires every time Claude finishes a response turn.
-// Sends a notification to the daemon so Telegram gets notified immediately.
+// Only notifies when Claude is truly done and waiting for user input.
+// Skips intermediate tool turns and subagent completions.
 
 const http = require('http');
 const fs = require('fs');
@@ -78,12 +78,19 @@ function postToDaemon(body) {
 }
 
 async function main() {
-  hookLog('Hook called');
   try {
     const input = await readStdin();
     const hookInput = input.hookInput || input;
-    const ttyPath = findTty();
 
+    // Only notify when Claude is truly done and waiting for user input.
+    // stop_hook_active is false during intermediate tool turns and subagent runs.
+    if (!hookInput.stop_hook_active) {
+      hookLog(`Skipped (not active) session=${hookInput.session_id}`);
+      process.exit(0);
+      return;
+    }
+
+    const ttyPath = findTty();
     hookLog(`session=${hookInput.session_id} tty=${ttyPath}`);
 
     await postToDaemon({
