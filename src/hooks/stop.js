@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 // Stop hook for Claude Code.
-// Only notifies when Claude is truly done and waiting for user input.
-// Skips intermediate tool turns and subagent completions.
+// Fires every time Claude finishes a response turn.
+// Sends to daemon which debounces per-TTY to avoid subagent spam.
 
 const http = require('http');
 const fs = require('fs');
@@ -81,16 +81,8 @@ async function main() {
   try {
     const input = await readStdin();
     const hookInput = input.hookInput || input;
-
-    // Only notify when Claude is truly done and waiting for user input.
-    // stop_hook_active is false during intermediate tool turns and subagent runs.
-    if (!hookInput.stop_hook_active) {
-      hookLog(`Skipped (not active) session=${hookInput.session_id}`);
-      process.exit(0);
-      return;
-    }
-
     const ttyPath = findTty();
+
     hookLog(`session=${hookInput.session_id} tty=${ttyPath}`);
 
     await postToDaemon({

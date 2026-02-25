@@ -35,6 +35,11 @@ const pendingElicitations = new Map();
 // Tool status tracking: session_id → { messageId, tools: [{ name, detail, status }] }
 const toolStatusMessages = new Map();
 
+// Stop debounce: tty_path → { timer, data, context }
+// Waits for silence before sending stop notification (avoids subagent spam)
+const pendingStops = new Map();
+const STOP_DEBOUNCE_MS = 5000; // 5 seconds of silence = Claude is truly done
+
 let bot;
 let config;
 
@@ -1650,12 +1655,56 @@ async function sendNotification(data) {
     return;
   }
 
-  // Stop notification — clear tool status for this session
+  // Stop notification — debounce per TTY to avoid subagent spam.
+  // Each subagent Task gets its own session_id and fires a stop.
+  // We wait for silence (no more stops from same TTY) before notifying.
   if (notifType === 'stop') {
     toolStatusMessages.delete(data.session_id);
+    const tty = data.tty_path || 'no-tty';
+
+    // Cancel any pending stop for this TTY
+    const pending = pendingStops.get(tty);
+    if (pending) {
+      clearTimeout(pending.timer);
+      log(`Stop debounce: replaced pending for ${tty}`);
+    }
+
+    // Start a new timer — only fires if no more stops arrive
+    const timer = setTimeout(() => {
+      pendingStops.delete(tty);
+      sendStopNotification(data).catch((e) => log(`Stop notify error: ${e.message}`));
+    }, STOP_DEBOUNCE_MS);
+
+    pendingStops.set(tty, { timer, data });
+    return;
   }
 
-  // Default notification flow
+  // Non-stop notifications — send immediately
+  await sendImmediateNotification(data, notifType);
+}
+
+async function sendStopNotification(data) {
+  trackSession(data);
+  const context = extractContext(data.transcript_path);
+  const msg = await formatNotification(data, context);
+  try {
+    const sent = await bot.telegram.sendMessage(config.chatId, msg.text, {
+      entities: msg.entities,
+    });
+
+    messageToSession.set(sent.message_id, {
+      sessionId: data.session_id,
+      type: 'notification',
+      createdAt: Date.now(),
+    });
+
+    log(`Notification sent: stop (msg ${sent.message_id})`);
+  } catch (err) {
+    log(`Notification send failed: ${err.message}`);
+  }
+}
+
+async function sendImmediateNotification(data, notifType) {
   const context = extractContext(data.transcript_path);
   const msg = await formatNotification(data, context);
   try {
