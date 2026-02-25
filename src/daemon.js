@@ -92,7 +92,7 @@ async function ensureTelegraph() {
     // Create new account
     const result = await client.createAccount('Claude TG', {
       author_name: 'Claude Code',
-      author_url: 'https://github.com/kokhp/claude-tg',
+      author_url: 'https://github.com/kokhp/teleclaude',
     });
 
     const token = result?.access_token || result?.result?.access_token;
@@ -342,7 +342,7 @@ end tell`;
   // Try Terminal.app — focus the tab, paste text from clipboard, press Enter
   if (terminalRunning) {
     try {
-      const tmpTextFile = '/tmp/claude-tg-input.txt';
+      const tmpTextFile = '/tmp/teleclaude-input.txt';
       fs.writeFileSync(tmpTextFile, trimmed);
 
       const script = [
@@ -368,8 +368,8 @@ end tell`;
         'end tell',
       ].join('\n');
 
-      fs.writeFileSync('/tmp/claude-tg-input.scpt', script);
-      await execAsync('osascript /tmp/claude-tg-input.scpt', { timeout: 15000 });
+      fs.writeFileSync('/tmp/teleclaude-input.scpt', script);
+      await execAsync('osascript /tmp/teleclaude-input.scpt', { timeout: 15000 });
       log(`Sent via Terminal.app to ${ttyPath}: ${truncate(text, 80)}`);
       return { ok: true };
     } catch (err) {
@@ -1043,8 +1043,8 @@ async function injectElicitationAnswers(ttyPath, questions, answers) {
       'end tell',
     ].join('\n');
 
-    fs.writeFileSync('/tmp/claude-tg-elicit.scpt', script);
-    await execAsync('osascript /tmp/claude-tg-elicit.scpt', { timeout: 30000 });
+    fs.writeFileSync('/tmp/teleclaude-elicit.scpt', script);
+    await execAsync('osascript /tmp/teleclaude-elicit.scpt', { timeout: 30000 });
     log(`Elicitation keystrokes sent via iTerm2 to ${ttyPath}`);
     return true;
   } catch {}
@@ -1071,8 +1071,8 @@ async function injectElicitationAnswers(ttyPath, questions, answers) {
       'end tell',
     ].join('\n');
 
-    fs.writeFileSync('/tmp/claude-tg-elicit.scpt', script);
-    await execAsync('osascript /tmp/claude-tg-elicit.scpt', { timeout: 30000 });
+    fs.writeFileSync('/tmp/teleclaude-elicit.scpt', script);
+    await execAsync('osascript /tmp/teleclaude-elicit.scpt', { timeout: 30000 });
     log(`Elicitation keystrokes sent via Terminal.app to ${ttyPath}`);
     return true;
   } catch (err) {
@@ -1492,7 +1492,7 @@ function startBot() {
   // Send startup notification after brief delay (let polling initialize)
   setTimeout(async () => {
     try {
-      await bot.telegram.sendMessage(config.chatId, '🟢 claude-tg daemon started');
+      await bot.telegram.sendMessage(config.chatId, '🟢 teleclaude daemon started');
       log('Startup notification sent to Telegram');
     } catch (e) {
       log(`Startup notification failed: ${e?.message || e}`);
@@ -1919,7 +1919,7 @@ function startCleanup() {
 function main() {
   config = loadConfig();
   if (!config.botToken || !config.chatId) {
-    console.error('Missing botToken or chatId. Run: claude-tg setup');
+    console.error('Missing botToken or chatId. Run: teleclaude setup');
     process.exit(1);
   }
 

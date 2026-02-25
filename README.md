@@ -1,4 +1,4 @@
-# claude-tg — Claude Code CLI to Telegram Bridge
+# teleclaude — Claude Code CLI to Telegram Bridge
 
 Control Claude Code CLI from your phone via Telegram — approve permissions, answer interactive questions, reply to idle sessions, and send files.
 
@@ -34,7 +34,7 @@ Uses Claude Code's native [hooks system](https://docs.anthropic.com/en/docs/clau
 ## Install
 
 ```bash
-npm install -g claude-tg
+npm install -g teleclaude
 ```
 
 ## Setup
@@ -48,7 +48,7 @@ npm install -g claude-tg
 ### 2. Run Setup
 
 ```bash
-claude-tg setup
+teleclaude setup
 ```
 
 This will:
@@ -61,7 +61,7 @@ This will:
 ### 3. Start the Daemon
 
 ```bash
-claude-tg daemon start
+teleclaude daemon start
 ```
 
 That's it. Use `claude` as normal — permission prompts and questions now go to Telegram.
@@ -149,15 +149,15 @@ Tell Claude "send this to my telegram" or "send this file to my telegram". It us
 
 ```bash
 # Send a text message
-claude-tg send "Here's the summary you asked for..."
+teleclaude send "Here's the summary you asked for..."
 
 # Send a file (images, videos, audio, documents)
-claude-tg send-file ./screenshot.png "Latest UI"
-claude-tg send-file ./demo.mp4 "Feature demo"
-claude-tg send-file ./report.pdf "Monthly report"
+teleclaude send-file ./screenshot.png "Latest UI"
+teleclaude send-file ./demo.mp4 "Feature demo"
+teleclaude send-file ./report.pdf "Monthly report"
 
 # Pipe content from stdin
-echo "hello" | claude-tg send -
+echo "hello" | teleclaude send -
 ```
 
 These work independently of the daemon — they hit the Telegram API directly.
@@ -171,7 +171,7 @@ Files are sent using the correct Telegram method based on type:
 | `.mp3` `.ogg` `.wav` `.flac` `.m4a` `.aac` | Audio (streams) |
 | Everything else | Document |
 
-For long text (>4096 chars), `claude-tg send` automatically sends it as a `.md` document.
+For long text (>4096 chars), `teleclaude send` automatically sends it as a `.md` document.
 
 ### Bot Commands
 
@@ -181,14 +181,14 @@ For long text (>4096 chars), `claude-tg send` automatically sends it as a `.md` 
 ## CLI Reference
 
 ```
-claude-tg setup              # Interactive setup
-claude-tg daemon start       # Start background daemon
-claude-tg daemon stop        # Stop daemon
-claude-tg daemon status      # Check daemon status + pending requests
-claude-tg daemon logs        # Tail daemon logs
-claude-tg send <text>        # Send text message (use "-" for stdin)
-claude-tg send-file <path>   # Send a file (optional caption as 2nd arg)
-claude-tg uninstall          # Remove hooks from ~/.claude/settings.json
+teleclaude setup              # Interactive setup
+teleclaude daemon start       # Start background daemon
+teleclaude daemon stop        # Stop daemon
+teleclaude daemon status      # Check daemon status + pending requests
+teleclaude daemon logs        # Tail daemon logs
+teleclaude send <text>        # Send text message (use "-" for stdin)
+teleclaude send-file <path>   # Send a file (optional caption as 2nd arg)
+teleclaude uninstall          # Remove hooks from ~/.claude/settings.json
 ```
 
 ## How It Works
@@ -243,9 +243,9 @@ If the daemon is not running:
 ## Project Structure
 
 ```
-claude-tg/
+teleclaude/
 ├── bin/
-│   └── claude-tg              # CLI entry point
+│   └── teleclaude              # CLI entry point
 ├── src/
 │   ├── config.js              # Read/write ~/.claude-telegram-bridge/config.json
 │   ├── daemon.js              # Telegram bot + HTTP server + Telegraph + session tracking
@@ -273,9 +273,9 @@ claude-tg/
 ## Uninstalling
 
 ```bash
-claude-tg daemon stop
-claude-tg uninstall
-npm uninstall -g claude-tg
+teleclaude daemon stop
+teleclaude uninstall
+npm uninstall -g teleclaude
 rm -rf ~/.claude-telegram-bridge
 ```
 

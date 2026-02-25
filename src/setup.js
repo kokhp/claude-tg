@@ -74,7 +74,7 @@ function installHooks(port) {
     settings.hooks[event] = (settings.hooks[event] || []).filter((entry) => {
       const hooks = entry.hooks || [];
       return !hooks.some((h) => h.command && (
-        h.command.includes('claude-telegram-bridge') || h.command.includes('claude-tg')
+        h.command.includes('claude-telegram-bridge') || h.command.includes('teleclaude') || h.command.includes('claude-tg')
       ));
     });
     if (settings.hooks[event].length === 0) {
@@ -111,7 +111,7 @@ function uninstallHooks() {
     settings.hooks[event] = (settings.hooks[event] || []).filter((entry) => {
       const hooks = entry.hooks || [];
       return !hooks.some((h) => h.command && (
-        h.command.includes('claude-telegram-bridge') || h.command.includes('claude-tg')
+        h.command.includes('claude-telegram-bridge') || h.command.includes('teleclaude') || h.command.includes('claude-tg')
       ));
     });
     if (settings.hooks[event].length === 0) {
@@ -217,14 +217,14 @@ async function run() {
   try {
     const { Telegraf } = require('telegraf');
     const testBot = new Telegraf(config.botToken);
-    await testBot.telegram.sendMessage(config.chatId, '✅ Claude Telegram Bridge configured successfully!\n\nRun `claude-tg daemon start` to begin.');
+    await testBot.telegram.sendMessage(config.chatId, '✅ Claude Telegram Bridge configured successfully!\n\nRun `teleclaude daemon start` to begin.');
     console.log('Test message sent to Telegram.');
   } catch (err) {
     console.error(`Could not send test message: ${err.message}`);
   }
 
   console.log('\nSetup complete! Next steps:');
-  console.log('  claude-tg daemon start   — Start the daemon');
+  console.log('  teleclaude daemon start   — Start the daemon');
   console.log('  claude                   — Use Claude as normal\n');
 
   rl.close();

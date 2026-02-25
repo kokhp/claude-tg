@@ -9,7 +9,7 @@ const { loadConfig, PID_PATH, LOG_PATH, CONFIG_DIR } = require('../src/config');
 const program = new Command();
 
 program
-  .name('claude-tg')
+  .name('teleclaude')
   .description('Claude Code ↔ Telegram Bridge')
   .version('1.0.0');
 
@@ -29,7 +29,7 @@ daemon
   .action(() => {
     const config = loadConfig();
     if (!config.botToken || !config.chatId) {
-      console.error('Not configured. Run: claude-tg setup');
+      console.error('Not configured. Run: teleclaude setup');
       process.exit(1);
     }
 
@@ -164,7 +164,7 @@ program
 function createTelegramClient() {
   const config = loadConfig();
   if (!config.botToken || !config.chatId) {
-    console.error('Not configured. Run: claude-tg setup');
+    console.error('Not configured. Run: teleclaude setup');
     process.exit(1);
   }
   const { Telegram } = require('telegraf');
@@ -203,7 +203,7 @@ program
         console.log('Message sent.');
       } else {
         // Long text — send as a document
-        const tmpFile = path.join(require('os').tmpdir(), `claude-tg-${Date.now()}.md`);
+        const tmpFile = path.join(require('os').tmpdir(), `teleclaude-${Date.now()}.md`);
         fs.writeFileSync(tmpFile, text);
         const { Input } = require('telegraf');
         await client.sendDocument(chatId, Input.fromLocalFile(tmpFile, 'message.md'), {
@@ -283,7 +283,7 @@ program
       console.log(`  Chat ID: ${config.chatId}`);
       console.log(`  Port: ${config.port}`);
     } else {
-      console.log('  NOT CONFIGURED. Run: claude-tg setup');
+      console.log('  NOT CONFIGURED. Run: teleclaude setup');
       ok = false;
     }
 
@@ -313,7 +313,7 @@ program
           const scriptPath = extractScriptPath(permCmd);
           if (nodeBin !== 'node' && !fs.existsSync(nodeBin)) {
             console.log(`    Node binary: NO — ${nodeBin}`);
-            console.log('    Run: claude-tg setup (to fix hook paths)');
+            console.log('    Run: teleclaude setup (to fix hook paths)');
             ok = false;
           } else if (scriptPath && fs.existsSync(scriptPath)) {
             console.log('    File exists: YES');
@@ -331,7 +331,7 @@ program
           const scriptPath = extractScriptPath(notifCmd);
           if (nodeBin !== 'node' && !fs.existsSync(nodeBin)) {
             console.log(`    Node binary: NO — ${nodeBin}`);
-            console.log('    Run: claude-tg setup (to fix hook paths)');
+            console.log('    Run: teleclaude setup (to fix hook paths)');
             ok = false;
           } else if (scriptPath && fs.existsSync(scriptPath)) {
             console.log('    File exists: YES');
@@ -345,7 +345,7 @@ program
         ok = false;
       }
     } else {
-      console.log('  ~/.claude/settings.json not found. Run: claude-tg setup');
+      console.log('  ~/.claude/settings.json not found. Run: teleclaude setup');
       ok = false;
     }
 
@@ -365,7 +365,7 @@ program
       });
       console.log(`  Running: YES (${health.sessions} sessions, ${health.pending} pending)`);
     } catch {
-      console.log('  Running: NO — start with: claude-tg daemon start');
+      console.log('  Running: NO — start with: teleclaude daemon start');
       ok = false;
     }
 
@@ -375,7 +375,7 @@ program
       try {
         const { Telegram } = require('telegraf');
         const tg = new Telegram(config.botToken);
-        await tg.sendMessage(config.chatId, '🧪 claude-tg test — everything is working!');
+        await tg.sendMessage(config.chatId, '🧪 teleclaude test — everything is working!');
         console.log('  Test message sent: YES');
       } catch (err) {
         console.log(`  Test message FAILED: ${err.message}`);
@@ -394,7 +394,7 @@ program
             session_id: 'test-' + Date.now(),
             cwd: process.cwd(),
             notification_type: 'idle_prompt',
-            message: 'Test notification from claude-tg test',
+            message: 'Test notification from teleclaude test',
             transcript_path: null,
             tty_path: null,
           });
