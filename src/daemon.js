@@ -1,9 +1,10 @@
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
-const { exec } = require('child_process');
+const { exec, execFile } = require('child_process');
 const util = require('util');
 const execAsync = util.promisify(exec);
+const execFileAsync = util.promisify(execFile);
 const { Telegraf, Markup } = require('telegraf');
 const { fmt, bold, code, pre, italic, link } = require('telegraf/format');
 const { loadConfig, saveConfig, LOG_PATH } = require('./config');
@@ -11,6 +12,20 @@ const fs = require('fs');
 const path = require('path');
 
 let telegraph;
+
+// --- cmux env ---
+// The daemon inherits stale CMUX_* env vars from the shell it was started in.
+// These can point to old sockets. Build a clean env once for all cmux calls.
+const cmuxCleanEnv = (() => {
+  const env = { ...process.env };
+  delete env.CMUX_SOCKET;
+  delete env.CMUX_SOCKET_PATH;
+  delete env.CMUX_SURFACE_ID;
+  delete env.CMUX_WORKSPACE_ID;
+  delete env.CMUX_PANEL_ID;
+  delete env.CMUX_TAB_ID;
+  return env;
+})();
 
 // --- State ---
 
@@ -38,7 +53,7 @@ const toolStatusMessages = new Map();
 // Stop debounce: tty_path → { timer, data, context }
 // Waits for silence before sending stop notification (avoids subagent spam)
 const pendingStops = new Map();
-const STOP_DEBOUNCE_MS = 5000; // 5 seconds of silence = Claude is truly done
+const STOP_DEBOUNCE_MS = 30000; // 30 seconds of silence = Claude is truly done
 
 let bot;
 let config;
@@ -114,7 +129,7 @@ async function ensureTelegraph() {
  */
 function markdownToTelegraphNodes(text) {
   const nodes = [];
-  const lines = text.split('\n');
+  const lines = (text || '').split('\n');
   let i = 0;
 
   while (i < lines.length) {
@@ -129,7 +144,11 @@ function markdownToTelegraphNodes(text) {
         i++;
       }
       i++; // skip closing ```
-      nodes.push({ tag: 'pre', children: [codeLines.join('\n')] });
+      const codeText = codeLines.join('\n');
+      // Telegraph rejects empty code blocks with CONTENT_TEXT_REQUIRED
+      if (codeText.length > 0) {
+        nodes.push({ tag: 'pre', children: [codeText] });
+      }
       continue;
     }
 
@@ -168,8 +187,18 @@ function markdownToTelegraphNodes(text) {
     }
 
     // Regular paragraph
-    nodes.push({ tag: 'p', children: [parseInline(line)] });
+    const parsed = parseInline(line);
+    // Telegraph rejects nodes with empty children → skip if parseInline returned empty
+    const isEmpty = parsed === '' || (Array.isArray(parsed) && parsed.length === 0);
+    if (!isEmpty) {
+      nodes.push({ tag: 'p', children: Array.isArray(parsed) ? parsed : [parsed] });
+    }
     i++;
+  }
+
+  // Telegraph API rejects empty node arrays with CONTENT_TEXT_REQUIRED
+  if (nodes.length === 0) {
+    nodes.push({ tag: 'p', children: [text || '(empty response)'] });
   }
 
   return nodes;
@@ -226,22 +255,29 @@ async function createTelegraphPage(title, content) {
   const client = await ensureTelegraph();
   if (!client) return null;
 
-  try {
-    const nodes = markdownToTelegraphNodes(content);
-    const result = await client.createPage(
-      config.telegraphAccessToken,
-      title,
-      nodes,
-      { author_name: 'Claude Code', return_content: false }
-    );
+  const nodes = markdownToTelegraphNodes(content);
 
-    const url = result?.url || result?.result?.url;
-    if (url) {
-      log(`Telegraph page created: ${url}`);
-      return url;
+  // Try up to 2 times with a short delay (Telegraph is flaky with ECONNRESET)
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const result = await client.createPage(
+        config.telegraphAccessToken,
+        title,
+        nodes,
+        { author_name: 'Claude Code', return_content: false }
+      );
+
+      const url = result?.url || result?.result?.url;
+      if (url) {
+        log(`Telegraph page created: ${url}`);
+        return url;
+      }
+    } catch (err) {
+      log(`Telegraph page creation error (attempt ${attempt + 1}): ${err.message}`);
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 1500));
+      }
     }
-  } catch (err) {
-    log(`Telegraph page creation error: ${err.message}`);
   }
   return null;
 }
@@ -251,11 +287,16 @@ async function createTelegraphPage(title, content) {
  */
 function trackSession(data) {
   const existing = sessions.get(data.session_id) || {};
+  const cmuxName = data.cmux_workspace_name || existing.cmuxWorkspaceName || null;
   sessions.set(data.session_id, {
     ...existing,
     ttyPath: data.tty_path || existing.ttyPath || null,
+    cmuxSurfaceRef: data.cmux_surface_ref || existing.cmuxSurfaceRef || null,
+    cmuxWorkspaceRef: data.cmux_workspace_ref || existing.cmuxWorkspaceRef || null,
+    cmuxWorkspaceName: cmuxName,
     cwd: data.cwd || existing.cwd,
-    label: projectLabel(data.cwd || existing.cwd),
+    // Prefer cmux workspace name (user-set in cmux) over cwd basename
+    label: cmuxName || projectLabel(data.cwd || existing.cwd),
     lastActive: Date.now(),
   });
 }
@@ -288,18 +329,43 @@ function escapeAppleScript(str) {
 }
 
 /**
- * Send text as input to a terminal session identified by its TTY path.
- * Uses osascript to type into the correct terminal tab/session.
- * Tries iTerm2 first, then Terminal.app. Non-blocking (async).
+ * Send text as input to a terminal session.
+ * Tries cmux first (if surface/workspace refs available), then iTerm2, then Terminal.app.
  * Returns { ok: true } on success, { ok: false, error: string } on failure.
  */
-async function sendInputToTerminal(ttyPath, text) {
-  if (!ttyPath) {
-    log('sendInput: no TTY path');
-    return { ok: false, error: 'No TTY path for this session' };
+async function sendInputToTerminal(ttyPath, text, cmuxSurfaceRef, cmuxWorkspaceRef) {
+  if (!ttyPath && !cmuxSurfaceRef) {
+    log('sendInput: no TTY path and no cmux surface ref');
+    return { ok: false, error: 'No TTY path or cmux surface for this session' };
   }
 
   const trimmed = text.trim();
+
+  // Try cmux first — works inside cmux terminal multiplexer
+  if (cmuxSurfaceRef && cmuxWorkspaceRef) {
+    try {
+      // cmux send interprets literal \n as Enter. Escape real newlines into \n.
+      const encoded = trimmed
+        .replace(/\\/g, '\\\\')
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '')
+        .replace(/\t/g, '\\t');
+      const inputWithEnter = encoded + '\\n';
+      log(`cmux send: ${cmuxWorkspaceRef} ${cmuxSurfaceRef} text=${truncate(trimmed, 60)}`);
+      // Pass --password "" to bypass socket auth (detached daemon can't read saved password)
+      await execFileAsync(
+        '/Applications/cmux.app/Contents/Resources/bin/cmux',
+        ['--password', '', 'send', '--workspace', cmuxWorkspaceRef, '--surface', cmuxSurfaceRef, '--', inputWithEnter],
+        { timeout: 8000 }
+      );
+      log(`Sent via cmux to ${cmuxSurfaceRef} (${cmuxWorkspaceRef}): ${truncate(text, 80)}`);
+      return { ok: true };
+    } catch (err) {
+      const stderr = err.stderr ? err.stderr.toString().slice(0, 300) : '';
+      log(`cmux send attempt failed: ${(err.message || '').slice(0, 200)} | stderr: ${stderr}`);
+    }
+  }
+
   const escaped = escapeAppleScript(trimmed);
 
   // Check which terminal apps are running (fast, non-blocking check)
@@ -381,8 +447,8 @@ end tell`;
     }
   }
 
-  log(`sendInput failed: no terminal found for ${ttyPath}`);
-  return { ok: false, error: `Could not send to terminal (${ttyPath}). Make sure iTerm2 or Terminal.app is open.` };
+  log(`sendInput failed: no terminal found for ${ttyPath} (cmux=${cmuxSurfaceRef || 'none'})`);
+  return { ok: false, error: `Could not send to terminal (${ttyPath}). Make sure cmux, iTerm2, or Terminal.app is open.` };
 }
 
 // --- Transcript reading ---
@@ -555,7 +621,7 @@ function formatToolDetails(toolName, toolInput) {
 }
 
 function formatPermissionMessage(data, context) {
-  const label = projectLabel(data.cwd);
+  const label = data.cmux_workspace_name || projectLabel(data.cwd);
   const sessionNum = getSessionLabel(data.session_id);
   const tool = data.tool_name || 'Unknown';
   const details = formatToolDetails(tool, data.tool_input);
@@ -584,11 +650,11 @@ function formatPermissionMessage(data, context) {
 }
 
 async function formatNotification(data, context) {
-  const label = projectLabel(data.cwd);
+  const label = data.cmux_workspace_name || projectLabel(data.cwd);
   const sessionNum = getSessionLabel(data.session_id);
   const type = data.notification_type || data.type || 'notification';
   const session = sessions.get(data.session_id);
-  const canReply = !!(session && session.ttyPath);
+  const canReply = !!(session && (session.ttyPath || session.cmuxSurfaceRef));
 
   const parts = [];
 
@@ -619,6 +685,9 @@ async function formatNotification(data, context) {
     );
     if (telegraphUrl) {
       parts.push(fmt`📄 Full response: ${telegraphUrl}\n`);
+    } else {
+      // Telegraph failed — flag for chunked sending
+      data._fullResponseFallback = true;
     }
   } else if (context.recentContext) {
     parts.push(fmt`💬 Claude said:\n${context.recentContext}\n`);
@@ -785,13 +854,17 @@ async function handleElicitationCallback(ctx, cbData) {
     try { await ctx.answerCbQuery('Sending answers...'); } catch {}
     try { await ctx.editMessageReplyMarkup(undefined); } catch {}
 
+    const elicSession = sessions.get(elic.sessionId);
+    const elicCmuxSurface = elicSession?.cmuxSurfaceRef || null;
+    const elicCmuxWorkspace = elicSession?.cmuxWorkspaceRef || null;
+
     if (elic.isPermission && elic.permissionResolve) {
       // From permission request — allow the tool, then inject answers after UI appears
       elic.permissionResolve({ decision: 'allow' });
       try { await ctx.editMessageText(ctx.callbackQuery.message.text + '\n\n✅ Answers submitted — injecting...'); } catch {}
 
       setTimeout(async () => {
-        const ok = await injectElicitationAnswers(elic.ttyPath, elic.questions, elic.answers);
+        const ok = await injectElicitationAnswers(elic.ttyPath, elic.questions, elic.answers, elicCmuxSurface, elicCmuxWorkspace);
         log(`Elicitation ${elicId}: ${ok ? 'keystrokes injected' : 'injection failed'}`);
         if (!ok) {
           bot.telegram.sendMessage(config.chatId, '⚠️ Could not inject answers into terminal').catch(() => {});
@@ -799,7 +872,7 @@ async function handleElicitationCallback(ctx, cbData) {
       }, 2000);
     } else {
       // From notification flow — inject immediately
-      const ok = await injectElicitationAnswers(elic.ttyPath, elic.questions, elic.answers);
+      const ok = await injectElicitationAnswers(elic.ttyPath, elic.questions, elic.answers, elicCmuxSurface, elicCmuxWorkspace);
       try {
         await ctx.editMessageText(ctx.callbackQuery.message.text +
           (ok ? '\n\n✅ Answers submitted' : '\n\n⚠️ Could not send to terminal'));
@@ -962,9 +1035,9 @@ async function handleElicitationCallback(ctx, cbData) {
  * Inject elicitation answers into the terminal via osascript keystrokes.
  * Navigates the AskUserQuestion form using arrow keys, space, tab, and enter.
  */
-async function injectElicitationAnswers(ttyPath, questions, answers) {
-  if (!ttyPath) {
-    log('injectElicitation: no TTY path');
+async function injectElicitationAnswers(ttyPath, questions, answers, cmuxSurfaceRef, cmuxWorkspaceRef) {
+  if (!ttyPath && !cmuxSurfaceRef) {
+    log('injectElicitation: no TTY path and no cmux surface');
     return false;
   }
 
@@ -1020,7 +1093,46 @@ async function injectElicitationAnswers(ttyPath, questions, answers) {
     return '';
   }).join('\n');
 
-  // Try iTerm2 first
+  // Try cmux first — map key events to cmux send-key / cmux send commands
+  if (cmuxSurfaceRef && cmuxWorkspaceRef) {
+    try {
+      const cmux = '/Applications/cmux.app/Contents/Resources/bin/cmux';
+      // --password "" bypasses socket auth for detached daemon process
+      const wsArgs = ['--password', '', '--workspace', cmuxWorkspaceRef, '--surface', cmuxSurfaceRef];
+      // Map AppleScript key codes to cmux key names
+      const keyCodeMap = { 125: 'down', 126: 'up', 36: 'enter', 48: 'tab' };
+
+      for (const e of events) {
+        if (e.type === 'key_code') {
+          const keyName = keyCodeMap[e.value];
+          if (keyName) {
+            await execFileAsync(cmux, ['send-key', ...wsArgs, keyName], { timeout: 3000 });
+          }
+        } else if (e.type === 'keystroke') {
+          if (e.value === 'return') {
+            await execFileAsync(cmux, ['send-key', ...wsArgs, 'enter'], { timeout: 3000 });
+          } else if (e.value === ' ') {
+            await execFileAsync(cmux, ['send-key', ...wsArgs, 'space'], { timeout: 3000 });
+          } else {
+            const encoded = e.value
+              .replace(/\\/g, '\\\\')
+              .replace(/\n/g, '\\n')
+              .replace(/\t/g, '\\t');
+            await execFileAsync(cmux, ['send', ...wsArgs, '--', encoded], { timeout: 3000 });
+          }
+        } else if (e.type === 'delay') {
+          await new Promise((r) => setTimeout(r, e.value * 1000));
+        }
+      }
+
+      log(`Elicitation keystrokes sent via cmux to ${cmuxSurfaceRef} (${cmuxWorkspaceRef})`);
+      return true;
+    } catch (err) {
+      log(`cmux elicitation error: ${(err.message || '').slice(0, 200)}`);
+    }
+  }
+
+  // Try iTerm2
   try {
     const script = [
       'tell application "iTerm2"',
@@ -1079,7 +1191,7 @@ async function injectElicitationAnswers(ttyPath, questions, answers) {
     log(`Terminal.app elicitation error: ${err.message}`);
   }
 
-  log(`injectElicitation failed: no terminal found for ${ttyPath}`);
+  log(`injectElicitation failed: no terminal found for ${ttyPath} (cmux=${cmuxSurfaceRef || 'none'})`);
   return false;
 }
 
@@ -1170,6 +1282,17 @@ function startBot() {
     const chatId = ctx.chat.id.toString();
     try { await ctx.reply(`Chat ID registered: ${chatId}\n\nThis chat will receive Claude Code permission requests.`); } catch {}
     log(`/start from chat ${chatId}`);
+  });
+
+  bot.command('help', async (ctx) => {
+    try {
+      await ctx.reply(
+        'teleclaude commands:\n\n' +
+        '/status — List active sessions & pending requests\n' +
+        '/help — Show this help\n\n' +
+        'Reply to a notification message to send text input to that session.'
+      );
+    } catch {}
   });
 
   bot.command('status', async (ctx) => {
@@ -1270,6 +1393,7 @@ function startBot() {
 
   // Handle text messages — route as user input to a terminal
   bot.on('text', async (ctx) => {
+    log(`bot.on(text) fired: chat=${ctx.chat?.id} text="${truncate(ctx.message.text || '', 80)}" replyTo=${ctx.message.reply_to_message?.message_id || 'none'}`);
     // Ignore commands
     if (ctx.message.text.startsWith('/')) return;
 
@@ -1366,12 +1490,12 @@ function startBot() {
 
     // Send the text to the terminal
     const session = sessions.get(targetSessionId);
-    if (!session || !session.ttyPath) {
-      try { await ctx.reply(`⚠️ No TTY for session #${getSessionLabel(targetSessionId)}. Open the terminal to respond.`); } catch {}
+    if (!session || (!session.ttyPath && !session.cmuxSurfaceRef)) {
+      try { await ctx.reply(`⚠️ No terminal for session #${getSessionLabel(targetSessionId)}. Open the terminal to respond.`); } catch {}
       return;
     }
 
-    const result = await sendInputToTerminal(session.ttyPath, text);
+    const result = await sendInputToTerminal(session.ttyPath, text, session.cmuxSurfaceRef, session.cmuxWorkspaceRef);
     if (result.ok) {
       const num = getSessionLabel(targetSessionId);
       try { await ctx.reply(`➡️ Sent to #${num} ${session.label}`); } catch {}
@@ -1416,11 +1540,11 @@ function startBot() {
       } catch {}
 
       // Notify Claude about the file
-      if (session.ttyPath) {
+      if (session.ttyPath || session.cmuxSurfaceRef) {
         const inputText = caption
           ? `I've uploaded an image at ./${filename} — ${caption}`
           : `I've uploaded an image at ./${filename}`;
-        await sendInputToTerminal(session.ttyPath, inputText);
+        await sendInputToTerminal(session.ttyPath, inputText, session.cmuxSurfaceRef, session.cmuxWorkspaceRef);
       }
 
       log(`Photo saved: ${filePath} for session ${sessionId}`);
@@ -1465,11 +1589,11 @@ function startBot() {
       } catch {}
 
       // Notify Claude about the file
-      if (session.ttyPath) {
+      if (session.ttyPath || session.cmuxSurfaceRef) {
         const inputText = caption
           ? `I've uploaded a file at ./${filename} — ${caption}`
           : `I've uploaded a file at ./${filename}`;
-        await sendInputToTerminal(session.ttyPath, inputText);
+        await sendInputToTerminal(session.ttyPath, inputText, session.cmuxSurfaceRef, session.cmuxWorkspaceRef);
       }
 
       log(`Document saved: ${filePath} for session ${sessionId}`);
@@ -1612,11 +1736,8 @@ function handleElicitationPermission(data) {
 async function sendNotification(data) {
   const notifType = data.notification_type || data.type;
 
-  // For stop events, check if session is known BEFORE registering it.
-  // Subagent sessions have never-before-seen IDs — skip them.
-  if (notifType !== 'stop') {
-    trackSession(data);
-  }
+  // Always track the session (registers TTY, cwd, etc.)
+  trackSession(data);
 
   // Check if this is an elicitation
   if (notifType === 'elicitation_dialog') {
@@ -1659,25 +1780,17 @@ async function sendNotification(data) {
     return;
   }
 
-  // Stop notification — only notify for known sessions.
-  // Subagent Tasks each get a unique session_id that was never seen before.
-  // Main sessions are registered via permission requests or prior notifications.
+  // Stop notification — debounce per TTY to batch subagent completions.
+  // All subagents share the parent's TTY, so rapid-fire stops get collapsed
+  // into a single notification after 30s of silence.
   if (notifType === 'stop') {
     toolStatusMessages.delete(data.session_id);
 
-    // Only notify for sessions we already know about (from permission requests etc.)
-    // Unknown session_ids are subagents — skip them silently.
-    const knownSession = sessions.has(data.session_id);
-    if (!knownSession) {
-      log(`Stop skipped (unknown session, likely subagent): ${data.session_id?.slice(0, 8)}`);
-      return;
-    }
-
-    // Debounce per TTY — if multiple stops from same TTY within window, send only the last
     const tty = data.tty_path || 'no-tty';
     const pending = pendingStops.get(tty);
     if (pending) {
       clearTimeout(pending.timer);
+      log(`Stop debounced (${tty}): ${data.session_id?.slice(0, 8)} replaces ${pending.data.session_id?.slice(0, 8)}`);
     }
 
     const timer = setTimeout(() => {
@@ -1697,8 +1810,9 @@ async function sendStopNotification(data) {
   trackSession(data);
   const context = extractContext(data.transcript_path);
   const msg = await formatNotification(data, context);
+  let sent;
   try {
-    const sent = await bot.telegram.sendMessage(config.chatId, msg.text, {
+    sent = await bot.telegram.sendMessage(config.chatId, msg.text, {
       entities: msg.entities,
     });
 
@@ -1711,6 +1825,70 @@ async function sendStopNotification(data) {
     log(`Notification sent: stop (msg ${sent.message_id})`);
   } catch (err) {
     log(`Notification send failed: ${err.message}`);
+    // Retry once as plain text without entities (in case entity offsets are broken)
+    try {
+      sent = await bot.telegram.sendMessage(config.chatId, msg.text);
+      messageToSession.set(sent.message_id, {
+        sessionId: data.session_id,
+        type: 'notification',
+        createdAt: Date.now(),
+      });
+      log(`Notification sent as plain text: stop (msg ${sent.message_id})`);
+    } catch (e2) {
+      log(`Plain-text retry also failed: ${e2.message}`);
+      return;
+    }
+  }
+
+  // If Telegraph failed, send full response as chunked messages
+  if (data._fullResponseFallback && data.message && data.message.length > 200) {
+    try {
+      await sendFullResponseChunked(data.message, sent.message_id);
+    } catch (err) {
+      log(`Chunked response failed: ${err.message}`);
+    }
+  }
+}
+
+/**
+ * Send a long response as multiple Telegram messages (4096 char limit per message).
+ * Splits on line boundaries to preserve readability.
+ */
+async function sendFullResponseChunked(text, replyToMessageId) {
+  const MAX_CHUNK = 4000; // Leave some room for Telegram's limit
+  const chunks = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    if (remaining.length <= MAX_CHUNK) {
+      chunks.push(remaining);
+      break;
+    }
+    // Find a good split point (newline) near the limit
+    let splitAt = remaining.lastIndexOf('\n', MAX_CHUNK);
+    if (splitAt < MAX_CHUNK * 0.5) {
+      // No good newline found, split at space
+      splitAt = remaining.lastIndexOf(' ', MAX_CHUNK);
+    }
+    if (splitAt < MAX_CHUNK * 0.3) {
+      // No good split point, hard split
+      splitAt = MAX_CHUNK;
+    }
+    chunks.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt).trimStart();
+  }
+
+  log(`Sending full response in ${chunks.length} chunks (Telegraph fallback)`);
+
+  for (let i = 0; i < chunks.length; i++) {
+    const header = chunks.length > 1 ? `📄 [${i + 1}/${chunks.length}]\n` : '📄 Full response:\n';
+    try {
+      await bot.telegram.sendMessage(config.chatId, header + chunks[i], {
+        reply_to_message_id: i === 0 ? replyToMessageId : undefined,
+      });
+    } catch (err) {
+      log(`Chunk ${i + 1}/${chunks.length} send failed: ${err.message}`);
+    }
   }
 }
 

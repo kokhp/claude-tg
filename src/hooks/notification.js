@@ -7,6 +7,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+const { getCmuxInfo } = require('./_cmux');
 
 const DAEMON_PORT = parseInt(process.env.CLAUDE_TG_PORT || '7483', 10);
 const DAEMON_HOST = '127.0.0.1';
@@ -90,6 +91,7 @@ async function main() {
 
     hookLog(`type=${notifType} session=${hookInput.session_id} tty=${ttyPath} port=${DAEMON_PORT}`);
 
+    const cmux = getCmuxInfo();
     await postToDaemon({
       session_id: hookInput.session_id,
       cwd: hookInput.cwd,
@@ -97,6 +99,9 @@ async function main() {
       message: hookInput.message,
       transcript_path: hookInput.transcript_path,
       tty_path: ttyPath,
+      cmux_surface_ref: cmux?.surfaceRef || null,
+      cmux_workspace_ref: cmux?.workspaceRef || null,
+      cmux_workspace_name: cmux?.workspaceName || null,
     });
 
     hookLog(`Sent to daemon OK`);
